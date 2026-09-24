@@ -1,0 +1,33 @@
+{
+  "name": "查询大连票据列表",
+  "url": "http://cs-electronic-bills-ng-http.default.hw-bw-prd-1.prd.baiwang.com",
+  "steps": [
+    {
+      "goal": "打开系统，使用账号登录",
+      "checks": [],
+      "url": "",
+      "note": "登录是进入票据查询的前提"
+    },
+    {
+      "goal": "在行政区域选择 2102 大连",
+      "checks": [],
+      "url": "",
+      "note": "选择查询的行政区域为大连"
+    },
+    {
+      "goal": "点击查询，查看票据列表",
+      "checks": [
+        {
+          "kind": "element_exists",
+          "value": "票据列表",
+          "expected": "",
+          "role": ""
+        }
+      ],
+      "url": "",
+      "note": "查询并加载票据列表"
+    }
+  ],
+  "vars": {},
+  "notes": "使用已提供的账号登录，行政区域选择 2102 大连后查询票据列表"
+}
