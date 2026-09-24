@@ -1,6 +1,6 @@
 {
   "name": "电子票据系统登录与查询",
-  "url": "http://cs-electronic-bills-ng-http.default.hw-bw-prd-1.prd.baiwang.com",
+  "url": "",
   "steps": [
     {
       "goal": "忽略“系统提示 token 缺失”提示（如果出现），使用系统账号登录：在“请输入帐户名”输入框输入执行时提供的账号，在“密码”输入框输入执行时提供的密码，然后点击“确 定”按钮。登录成功后等待页面加载完成。",

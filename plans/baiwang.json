@@ -1,6 +1,6 @@
 {
   "name": "电子票据系统登录并查询大连票据列表",
-  "url": "http://cs-electronic-bills-ng-http.default.hw-bw-prd-1.prd.baiwang.com",
+  "url": "",
   "steps": [
     {
       "goal": "打开系统登录页，使用账号登录，完成登录后进入系统主页面",

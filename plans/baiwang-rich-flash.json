@@ -1,6 +1,6 @@
 {
   "name": "电子票据查询-登录并筛选大连",
-  "url": "http://cs-electronic-bills-ng-http.default.hw-bw-prd-1.prd.baiwang.com",
+  "url": "",
   "steps": [
     {
       "goal": "打开页面；如果出现\"系统提示 token 缺失\"提示，忽略它，不要关闭或处理，继续进行后续登录操作。",

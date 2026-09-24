@@ -47,7 +47,7 @@ uv run ui-agent snapshot --url http://example.com
 # 跑目标：debug 模式可视化；断言用 --check 独立指定（DONE 不算证据）
 uv run ui-agent run `
   --goal-file examples\goals\baiwang_login.txt `
-  --url http://cs-electronic-bills-ng-http.default.hw-bw-prd-1.prd.baiwang.com `
+  --url <网址> `
   --task baiwang-login --mode debug `
   --var 账号=<账号> --var 密码=<密码> `
   --check element_exists=行政区域
@@ -72,11 +72,14 @@ uv run ui-agent plan --desc "打开系统，用账号登录，行政区域选 21
   --url <网址> --out plans\baiwang.json
 
 # 2) 按计划执行：一个浏览器会话跑完所有步骤，每步独立断言，失败即停
-uv run ui-agent run --plan-file plans\baiwang.json --mode debug
+uv run ui-agent run --plan-file plans\baiwang.json --url <网址> --mode debug
 
 # 3) 重出报告（不需要重跑）
 uv run ui-agent report --run-dir .artifacts\runs\<某次运行>
 ```
+
+版本库里的计划文件**不写入口地址**（免把生产域名带进公开仓库），运行时用 `--url` 给；
+忘了给会直接报「计划里没有 url，请用 --url 指定入口」，不会拿空地址去跑。
 
 `--var 键=值` 可以给 `TYPE_TEXT` 字段直接供值（优先于文本模型，值不落盘、不进模型），
 也可以给 `UPLOAD` 供**上传文件路径**（键名要出现在控件标签里，多文件用 `;` 分隔）；
