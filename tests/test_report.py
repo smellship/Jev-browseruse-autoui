@@ -55,8 +55,8 @@ def plan_dir(tmp_path: Path) -> Path:
     ])
     write_json(step1 / "actions.json", [{"action": "TYPE_TEXT", "kind": "1", "text": "sysadmin",
                                          "level": "T0", "page_changed": True, "step": 0}])
-    (step1 / "shots").mkdir(parents=True)
-    (step1 / "shots" / "00-type_text.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    (step1 / "screenshots").mkdir(parents=True)
+    (step1 / "screenshots" / "00-type_text.png").write_bytes(b"\x89PNG\r\n\x1a\n")
 
     step2 = run_dir / "steps" / "02-查询"
     write_json(step2 / "result.json", {"status": "check_failed", "detail": "断言未通过", "checks": [
@@ -75,7 +75,7 @@ def test_plan_report_renders_steps_checks_and_relative_shots(tmp_path):
     assert "计划「登录并查询」" in text and "第 1 步：登录" in text
     assert "成功：全部断言通过" in text and "失败：断言未通过" in text
     assert "text_contains" in text and "登录完成" in text
-    assert 'src="steps/01-登录/shots/00-type_text.png"' in text
+    assert 'src="steps/01-登录/screenshots/00-type_text.png"' in text
     assert "文本值来源：var 账号" in text
     assert "↻" in text and "repeat_no_progress" in text
 
@@ -93,12 +93,12 @@ def test_single_run_report(tmp_path):
     write_json(run_dir / "result.json", {"status": "blocked", "detail": "决策模型判定无法推进",
                                          "checks": [], "defect_candidates": [], "url": "http://x/"})
     write_trace(run_dir / "trace.jsonl", [trace_row(0, "BLOCKED", action=None)])
-    (run_dir / "shots").mkdir()
-    (run_dir / "shots" / "failure.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    (run_dir / "screenshots").mkdir()
+    (run_dir / "screenshots" / "failure.png").write_bytes(b"\x89PNG\r\n\x1a\n")
 
     text = build_report(run_dir).read_text(encoding="utf-8")
     assert "单目标运行" in text and "阻塞：决策模型认为无法推进" in text
-    assert 'src="shots/failure.png"' in text and "BLOCKED" in text
+    assert 'src="screenshots/failure.png"' in text and "BLOCKED" in text
 
 
 def test_report_without_artifacts_raises(tmp_path):

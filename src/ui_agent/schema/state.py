@@ -33,6 +33,7 @@ class Element(BaseModel):
     accept: str = ""            # 文件输入的 accept 声明（原样，供执行前校验）
     multiple: bool = False      # 文件输入是否允许多选
     hidden: bool = False        # 存在但不可见（文件输入常被隐藏，UPLOAD 仍可用）
+    shadow: bool = False        # 位于 open shadow root 内（只影响模型对"点不点得到"的判断）
 
 
 class PageInfo(BaseModel):

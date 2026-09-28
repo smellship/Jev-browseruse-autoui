@@ -84,6 +84,10 @@ class Driver:
         self._clock = clock
         self.zoom_note = ""
         self.paint_note = ""
+        self._opened: list[Page] = []      # 动作派生的新标签（事件处理器只登记，切换在 settle 里做）
+        self._closed: list[Page] = []
+        self._notes: list[str] = []        # 页面级事实（新标签/切回），由 runner 收进 trace
+        self._dialogs: list[dict] = []     # 原生对话框事实
 
     # --- 生命周期 ---
 
@@ -104,6 +108,9 @@ class Driver:
         self.page = pages[0] if pages else self.context.new_page()
         for extra in pages[1:]:
             extra.close()  # 只留一个标签页，避免决策上下文漂移
+        self.context.on("page", self._on_page)
+        self.page.on("dialog", self._on_dialog)  # 不挂处理器时 Playwright 会静默自动关掉对话框
+        self.page.on("close", self._on_page_close)
         self.normalize_zoom()
 
     def close(self) -> None:
@@ -120,6 +127,70 @@ class Driver:
 
     def reload(self) -> None:
         self.page.reload(wait_until="domcontentloaded", timeout=30000)
+
+    # --- 新标签 / 原生对话框（事件处理器内不做往返调用，只登记事实） ---
+
+    def _on_page(self, page: Page) -> None:
+        page.on("dialog", self._on_dialog)
+        page.on("close", self._on_page_close)
+        self._opened.append(page)
+
+    def _on_page_close(self, page: Page) -> None:
+        self._closed.append(page)
+
+    def _on_dialog(self, dialog) -> None:
+        """原生对话框：按策略应答，并把"出现过什么"变成可对账的事实。
+
+        默认 dismiss：不阻塞、不改页面状态；accept 会真的点确定，必须显式配置。
+        """
+        accept = self.s.ui_agent_dialog_policy == "accept"
+        item = {"kind": dialog.type, "message": (dialog.message or "")[:200],
+                "handled": "accept" if accept else "dismiss"}
+        if dialog.type == "prompt":
+            item["default_value"] = (dialog.default_value or "")[:100]
+        try:
+            if accept and dialog.type == "prompt":
+                dialog.accept(dialog.default_value or "")
+            elif accept:
+                dialog.accept()
+            else:
+                dialog.dismiss()
+        except PlaywrightError:
+            item["handled"] = "failed"
+        self._dialogs.append(item)
+
+    def _sync_pages(self) -> None:
+        """动作之后对齐"当前页"：新开的跟过去，当前页被关掉就切回剩下的一个。"""
+        target: Page | None = None
+        if self._closed:
+            closed = set(self._closed)
+            self._closed.clear()
+            if self.page in closed:
+                target = next((p for p in reversed(self.context.pages) if p not in closed), None)
+                if target is not None:
+                    self._notes.append(f"当前标签页已关闭，切回：{target.url or '（空）'}")
+        if self._opened:
+            fresh = next((p for p in reversed(self._opened) if not p.is_closed()), None)
+            self._opened.clear()
+            if fresh is not None and fresh is not self.page:
+                target = fresh
+                self._notes.append(f"跟随新标签页：{fresh.url or '（空）'}")
+        if target is None or target is self.page:
+            return
+        self.page = target
+        try:
+            self.page.wait_for_load_state("domcontentloaded",
+                                          timeout=max(1000, self.s.settle_ms * 3))
+        except PlaywrightError:
+            pass
+
+    def take_notes(self) -> list[str]:
+        notes, self._notes = self._notes, []
+        return notes
+
+    def take_dialogs(self) -> list[dict]:
+        dialogs, self._dialogs = self._dialogs, []
+        return dialogs
 
     # --- 首帧就绪门 / 空白页恢复 ---
 
@@ -202,17 +273,17 @@ class Driver:
 
     # --- 目标解析与守卫 ---
 
-    def locator(self, index: int):
+    def frame_of(self, index: int) -> Frame:
         frame = self._frames.get(index)
         if frame is None:
             raise StaleTarget(f"索引 {index} 不在当次快照中")
-        return frame.locator(f'[data-uiagent-idx="{index}"]')
+        return frame
+
+    def locator(self, index: int):
+        return self.frame_of(index).locator(f'[data-uiagent-idx="{index}"]')
 
     def guard(self, index: int) -> dict:
-        frame = self._frames.get(index)
-        if frame is None:
-            raise StaleTarget(f"索引 {index} 不在当次快照中")
-        return frame.evaluate(GUARD_JS, {"index": index})
+        return self.frame_of(index).evaluate(GUARD_JS, {"index": index})
 
     # --- 动作 ---
 
@@ -287,7 +358,8 @@ class Driver:
                        "files": [{"name": f.name, "type": f.mime,
                                   "b64": base64.b64encode(f.path.read_bytes()).decode("ascii")}
                                  for f in files]}
-            result = self.evaluate(DROP_FILE_JS, payload)
+            # 在目标自己的 frame 里派发：索引属于哪个文档，事件就得在哪个文档里合成
+            result = self.frame_of(index).evaluate(DROP_FILE_JS, payload)
             if not result or not result.get("ok"):
                 raise RuntimeError(f"拖拽派发失败：{(result or {}).get('reason') or '未知原因'}")
 
@@ -313,8 +385,10 @@ class Driver:
         self.page.wait_for_timeout(min(ms, 5000))
 
     def settle(self, ms: int | None = None) -> None:
-        """动作之后给页面一点时间落定：先等 DOM 就绪，再留一小段渲染时间。"""
+        """动作之后给页面一点时间落定：先让派生事件（新标签/对话框）派发，再等 DOM 就绪与渲染。"""
         budget = self.s.settle_ms if ms is None else ms
+        self.page.wait_for_timeout(budget)
+        self._sync_pages()
         try:
             self.page.wait_for_load_state("domcontentloaded", timeout=budget)
         except PlaywrightError:
@@ -325,5 +399,8 @@ class Driver:
         path.parent.mkdir(parents=True, exist_ok=True)
         self.page.screenshot(path=str(path))
 
-    def evaluate(self, js: str, arg=None):
-        return self.page.evaluate(js, arg)
+    def evaluate(self, js: str, arg=None, index: int | None = None):
+        """求值：给了索引就在该索引所属的 frame 里跑，否则跑在主页面。"""
+        if index is None:
+            return self.page.evaluate(js, arg)
+        return self.frame_of(index).evaluate(js, arg)

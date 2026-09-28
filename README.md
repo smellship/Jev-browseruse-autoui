@@ -36,6 +36,13 @@ uv run python scripts\smoke_supervisor.py --headed
 uv run python scripts\smoke_upload.py
 uv run python scripts\smoke_upload.py --headed          # 可视化看拖拽与提交
 uv run python scripts\smoke_upload.py --files a.png b.pdf   # 指定上传文件（默认复用已有截图）
+
+# 离线结构冒烟：iframe / shadow DOM / 遮挡 / 新标签 / 原生对话框（本地 HTTP 服务，零模型调用）
+uv run python scripts\smoke_m3.py
+uv run python scripts\smoke_m3.py --headed --only tab   # 只看"新标签跟随"那一段
+
+# 离线契约冒烟：case compile / snapshot --json / run --json / report --json 的子进程级验证（零模型调用）
+uv run python scripts\smoke_cli.py
 ```
 
 ## 跑一个目标
@@ -132,24 +139,80 @@ RECOVER 的动作走和 Jev 决策完全相同的执行路径（守卫、降级�
 `scripts/smoke_upload.py` 用真实 Chromium 跑 A、C 两条通道各一次，外加一条负例（往未声明 `accept` 的控件传 `.txt`，
 页面必须自己拒收并给出文案），全程零模型调用。
 
+## 页面结构支持（M3）：iframe / shadow DOM / 新标签 / 原生对话框
+
+| 结构 | 行为 | 边界 |
+|---|---|---|
+| iframe | 快照逐帧收集（元素带 `frame` 事实）；索引 → locator 在元素所属帧内解析，动作（含 drop 上传）也在那一帧里执行 | 逐帧求值不受同源限制，跨域帧同样收 |
+| shadow DOM | 穿透各级 **open** shadow root：元素进快照并标 `shadow` 事实，影子里的文本同样收集；命中测试按"文档 → 宿主 shadowRoot"逐层下钻 | `closed` 的 shadow root 从页面 JS 进不去，里面的元素模型看不见 |
+| 新标签 | `context.on("page")` 登记，动作后的 settle 里跟随最新标签；当前标签被关掉就切回剩下的一个 | 只跟随，不自动关闭任何标签 |
+| 原生对话框 | 挂 `page.on("dialog")`：默认 `dismiss`（不改变页面状态）；`--dialog-policy accept` 才点确定（prompt 保留页面输入的默认值）；`confirm` / `prompt` / `beforeunload` 一律记缺陷候选 | `alert` 只记事实、不算缺陷 |
+
+不挂处理器时 Playwright 会**静默自动关掉**对话框——页面代码以为用户点了取消/确定，测试却什么都没记下来。所以这里一律显式应答并把事实落盘：
+trace 每行的 `page_facts`（`{"fact": "dialog", "kind": "confirm", "message": …, "handled": "dismiss"}` 与 `{"fact": "tab", "note": …}`），
+`actions.json` 里对应一行 `action="PAGE"`——它不是动作，所以不计入重复判定与动作预算，只作为模型与报告能看到的事实。
+
+离线冒烟 `scripts/smoke_m3.py` 起一个本地 HTTP 服务跑 `examples/m3_fixture.html`（子页 `m3_child.html`），
+八个用例：帧内点击、帧内 drop 上传、影子点击、被 light DOM 盖住的影子按钮判**不可达**（不许假成功）、新标签跟随、
+alert（dismiss）/ confirm（dismiss 与 accept）/ prompt（accept 保留默认值）。全程零模型调用。
+
+## 给平台/CI 用的命令行契约（P0）
+
+外层平台只按 **argv 调 CLI + 读文件/JSON**，不 import 内核代码。带 `--json` 的子命令：
+stdout 只留最后一份 JSON（人类话术走 stderr），退出码 **0=成功、1=用例失败（JSON 仍有效）、其他=内核错误**。
+
+```powershell
+# 用例 YAML → 计划：校验 + 编译（--secret-keys 给出环境已登记的密钥名，用于查未知引用）
+uv run ui-agent case compile --in cases\baiwang.yaml --json --secret-keys 账号,密码
+#   → {ok, errors[{line,code,message}], warnings[…], plan}；errors 非空时 plan 为 null
+#   → 编译出的 plan 可直接落盘当 run --plan-file 的输入
+
+# 一句话 → 用例草稿（这一步调用文本模型）
+uv run ui-agent case draft --desc "登录后查询票据" --url <网址> --json
+#   → {ok, yaml, plan, meta}；出来的 YAML 先过一遍 compile 自检，不合规就报错
+
+# 跑（--run-dir 指定产物目录；--mode 只管产物策略，服务器用 UI_AGENT_HEADLESS=true 照样无头）
+uv run ui-agent run --plan-file plan.json --run-dir .artifacts\runs\case-123 --mode ci --url <网址> --json --var 账号=<账号>
+
+# 探针：只看不点，给平台登记环境用
+uv run ui-agent snapshot --url <网址> --json
+#   → {ok, summary:{final_url,title,element_count,needs_login,has_password_field}, state}
+#   needs_login 取「页面上有密码输入框」这个确定性信号，不做业务推断
+
+# 重出报告
+uv run ui-agent report --run-dir .artifacts\runs\case-123 --json   # → {ok, report}
+```
+
+用例 YAML 的校验规则（错误：空 steps / 空 goal / 空 checks / 把 `${{secret.*}}` 写进 goal /
+未知断言类型 / 名称含 `/\:*?"<>|` / 未登记的密钥名 / 重复键；警告：末步断言偏弱、
+步骤 > 12、单步断言 > 3、变量写了字面量敏感值、硬编码 url）由 `ui_agent/case/yaml_case.py` 实现，
+错误带**真实行号**（按 YAML 节点定位），未知密钥通过 `--secret-keys` 与环境的登记表比对。
+
+`case draft` 与 `plan` 生成的 YAML **不写 url**：入口留给环境决定，同一份用例才能跑在不同环境。
+
 ## 产物
 
 单目标运行在 `.artifacts/runs/<任务>-<时间>/` 留下：`result.json`、`trace.jsonl`（每步决策与降级级别）、
-`actions.json`（动作 + 是否改变页面）、`snapshots/*.json`（喂给模型的 state）、`report.html`。
+`actions.json`（动作 + 是否改变页面）、`snapshots/*.json`（喂给模型的 state）、`screenshots/`、`report.html`。
 
 计划的运行目录多出：`plan.json`、`summary.json`（逐步结果 + `replans`）、`steps/<NN-目标>/`（每步自成一套产物）、
+根 `trace.jsonl`（各步 trace 的**聚合**，每行补记 `plan_step`）、根 `actions.json`（同理，带 `plan_step`）、
 `report.html`（汇总报告，截图按相对路径引用）；发生重排时还有 `plan.final.json`。
-截图只在 debug 模式逐步留存，ci 只留失败一张。
+
+平台的回读口径就锚在这套布局上：`summary.json` 给状态与逐步结果，根 `trace.jsonl` 给逐决策时间线（含 `url`/`title`），
+根 `actions.json` 给动作序列。截图只进报告、永不进模型输入；`mode=debug` 逐步留图，`mode=ci` 只留失败那一张。
+`mode` 与有无头已经解绑（`UI_AGENT_HEADLESS` 单独控制），服务器上 `--mode debug` 也不会弹窗。
 
 ## 目录
 
 | 路径 | 内容 |
 |---|---|
-| `src/ui_agent/cli.py` | 命令行：`plan` / `run` / `snapshot` / `report`（`run --no-supervisor` 可关掉监督缝） |
+| `src/ui_agent/cli.py` | 命令行：`case` / `plan` / `run` / `snapshot` / `report`（`--no-supervisor`、`--upload-mode`、`--dialog-policy` 可覆盖配置） |
+| `src/ui_agent/case/` | 用例 YAML：按行号校验 → 编译成计划；计划 → 用例 YAML 草稿 |
 | `src/ui_agent/llm/` | 三个 LLM 缝：planner 编排、textfill 字段取值、supervisor 卡住裁决 |
 | `src/ui_agent/observe/` | state 组装；`js/snapshot.js` 页面内取数与索引标记；`js/guard.js` 执行前守卫 |
 | `src/ui_agent/decide/` | Jev 客户端、questions 模板、提示词 |
-| `src/ui_agent/driver/` | Playwright 驱动：双模式启动、点击降级阶梯、跨 frame 快照 |
+| `src/ui_agent/driver/` | Playwright 驱动：双模式启动、点击降级阶梯、跨 frame 快照、新标签跟随、原生对话框事实 |
 | `src/ui_agent/act/` | 白名单动作执行 + 守卫预检 + 降级通报；上传取值校验（`upload.py`） |
 | `src/ui_agent/verify/` | 独立断言（文本/URL/元素/控件值），不看模型自述 |
 | `src/ui_agent/run/` | 单目标主循环与多步计划执行、卡住检测、监督升级、预算、产物落盘 |
@@ -159,6 +222,7 @@ RECOVER 的动作走和 Jev 决策完全相同的执行路径（守卫、降级�
 | `.browsers/` | 工作区内置浏览器（gitignore，`scripts/env.ps1` 导出路径） |
 | `.artifacts/` | 持久化 profile、运行产物（gitignore） |
 | `examples/goals/` | 现成的自然语言目标（百望登录、百望全流程） |
+| `examples/` | 本地夹具：`local_fixture.html`（上传规则）、`m3_fixture.html` + `m3_child.html`（iframe / shadow / 新标签 / 对话框） |
 
 ## 状态
 
@@ -169,10 +233,13 @@ M1 完成：planner 拆解 + 多步计划执行（一个会话、失败即停、
 M2 完成：卡住/阻塞/预算/断言未过时交给监督模型（HINT / RECOVER / REPLAN / ABORT），
 裁决与落点由代码校验，预算有限、不可用即退回 M0 停机语义；计划模式支持整体重排。
 
-M3 部分完成：**上传**已可用（见上，A/C 两条通道 + 页面级验收），iframe / shadow DOM / 新标签 / 弹窗仍未开始。
-M4（批量回归）未开始。
+M3 完成（本地夹具验证）：**上传**（A/C 两条通道 + 页面级验收）与**页面结构**（iframe / open shadow DOM /
+新标签跟随 / 原生对话框事实化 + `--dialog-policy`）。这些能力都在 `scripts/smoke_m3.py` 与 `smoke_upload.py`
+的真实 Chromium 上跑通，但**尚未在真实业务页面上实跑校准**——拿到合适的页面后再验证一遍（尤其是遮挡判定与跨域帧）。
+M4（批量回归）未开始。P0（平台契约）已完成：`case compile/draft`、`run --run-dir/--json`、`snapshot --json`、
+`report --json` 与产物布局（根聚合 `trace.jsonl`/`actions.json`、`screenshots/`），命令行契约有子进程级冒烟 `scripts/smoke_cli.py` 把守。
 
-离线单测 180 项与四个冒烟脚本（`smoke_snapshot` / `smoke_plan` / `smoke_supervisor` / `smoke_upload`）全绿。
+离线单测 222 项与六个冒烟脚本（`smoke_cli` / `smoke_snapshot` / `smoke_plan` / `smoke_supervisor` / `smoke_upload` / `smoke_m3`）全绿。
 
 实跑校准（2026-09-23，百望非税查询页）：`goto` 之后**不能立刻信快照**——页面 `domcontentloaded`
 后先渲染壳（约 20 个导航元素），内容区 0.8–3 秒后才到，中间那段窗口"看起来稳定"却没有任何

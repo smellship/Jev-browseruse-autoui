@@ -133,6 +133,8 @@ def to_jev_state(state: State) -> dict:
             data["hidden"] = True
         if el.frame:
             data["frame"] = el.frame
+        if el.shadow:
+            data["shadow"] = True
         if el.disabled:
             data["disabled"] = True
         for key in ("checked", "selected", "expanded"):

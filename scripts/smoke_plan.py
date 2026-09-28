@@ -101,7 +101,8 @@ def main() -> int:
     parser.add_argument("--headed", action="store_true", help="可视化跑一遍（会弹窗）")
     args = parser.parse_args()
 
-    settings = Settings(ui_agent_mode="debug" if args.headed else "ci", ui_agent_supervisor=False)
+    settings = Settings(ui_agent_mode="debug" if args.headed else "ci",
+                        ui_agent_headless=not args.headed, ui_agent_supervisor=False)
     plan = Plan(name="本地夹具两步计划", url=FIXTURE.as_uri(), steps=[
         PlanStep(goal="填写登录信息并点确定",
                  checks=[CheckSpec(kind="text_contains", expected="已登录：smoke-user")]),
@@ -152,14 +153,32 @@ def main() -> int:
     print("\n[4] HTML 报告")
     report = run_dir / "report.html"
     text = report.read_text(encoding="utf-8") if report.exists() else ""
-    shots_rel = (Path("steps") / result.steps[0].dir / "shots").as_posix() + "/"
+    shots_rel = (Path("steps") / result.steps[0].dir / "screenshots").as_posix() + "/"
     check("report.html 已生成", report.exists() and "计划「本地夹具两步计划」" in text)
     check("报告里有每步的断言", "已登录：smoke-user" in text and "医疗电子票据" in text)
     if args.headed:
-        check("可视化模式每步都有截图链接", f'src="{shots_rel}' in text, text[-200:])
+        check("debug 模式每步都有截图链接", f'src="{shots_rel}' in text, text[-200:])
     else:
-        check("无头模式不落逐步截图（只有失败才截）",
-              "shots/" not in text or (run_dir / "shots").exists() is False)
+        check("ci 模式不落逐步截图（只有失败才截）",
+              "screenshots/" not in text or (run_dir / "screenshots").exists() is False)
+
+    print("\n[5] 平台契约产物（P0）")
+    root_trace = [json.loads(line) for line in
+                  (run_dir / "trace.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
+    check("运行目录根部有聚合 trace.jsonl，每行都有 step/url/title",
+          bool(root_trace) and all({"step", "url", "title"} <= set(row) for row in root_trace),
+          f"{len(root_trace)} 行")
+    check("聚合 trace 覆盖两步（plan_step 1/2）",
+          {row.get("plan_step") for row in root_trace} == {1, 2},
+          str(sorted({row.get("plan_step") for row in root_trace})))
+    root_actions = load_json(run_dir / "actions.json") if (run_dir / "actions.json").exists() else []
+    check("运行目录根部有聚合 actions.json（带 plan_step）",
+          bool(root_actions) and {item.get("plan_step") for item in root_actions} == {1, 2},
+          f"{len(root_actions)} 条")
+    check("summary.json 记了 mode 与 headless（产物策略与有无头已解绑）",
+          summary.get("mode") == ("debug" if args.headed else "ci")
+          and summary.get("headless") == (not args.headed),
+          f"mode={summary.get('mode')} headless={summary.get('headless')}")
 
     print("")
     if FAILURES:

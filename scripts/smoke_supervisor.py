@@ -187,7 +187,7 @@ def main() -> int:
     check("报告里 HINT 文本与触发点都在",
           HINT_TEXT in text and "repeat_no_progress" in text, text[-200:])
     if not args.headed:
-        check("无头模式落下失败截图（第 3 步中止）", (run_dir / "shots" / "failure.png").exists())
+        check("无头模式落下失败截图（第 3 步中止）", (run_dir / "screenshots" / "failure.png").exists())
 
     print("")
     if FAILURES:

@@ -42,7 +42,8 @@ class StuckDetector:
         self._attempts = self._attempts + 1 if key == self._last_key else 1
         self._last_key = key
 
-        last = recent[-1] if recent else None
+        # "没有进展"看最近一次真正的动作：页面事实行（新标签/对话框）不算尝试
+        last = next((a for a in reversed(recent) if a.action != "PAGE"), None)
         no_progress = last is not None and last.page_changed is False
         if self._attempts >= self.repeat_limit and no_progress:
             return StuckSignal(

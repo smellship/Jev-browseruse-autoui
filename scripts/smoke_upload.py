@@ -75,7 +75,7 @@ def pick_files(explicit: list[str], scratch: Path) -> list[Path]:
     if explicit:
         files = [Path(item).resolve() for item in explicit]
     else:
-        shots = sorted((PROJECT_ROOT / ".artifacts" / "runs").glob("*/shots/*.png"))
+        shots = sorted((PROJECT_ROOT / ".artifacts" / "runs").glob("*/screenshots/*.png"))
         files = [shots[0], shots[-1]] if len(shots) >= 2 else []
         if not files:
             scratch.mkdir(parents=True, exist_ok=True)

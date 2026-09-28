@@ -55,3 +55,10 @@ def test_recent_actions_and_click_failures_pass_through():
 def test_empty_snapshot_is_survivable():
     state = build_state({}, [], None, 250, 6000)
     assert state.elements == [] and state.page.url == ""
+
+
+def test_shadow_flag_flows_from_the_snapshot_script():
+    raw = {**RAW, "elements": [{**RAW["elements"][0], "shadow": True}]}
+    state = build_state(raw, [], None, 250, 6000)
+    assert state.elements[0].shadow is True
+    assert build_state(RAW, [], None, 250, 6000).elements[0].shadow is False

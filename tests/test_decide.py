@@ -139,6 +139,12 @@ class TestQuestions:
         assert payload["elements"][0]["options"] == [{"key": "7:1", "label": "甲", "value": "a",
                                                       "selected": False, "disabled": False}]
 
+    def test_shadow_element_is_flagged_as_a_fact(self):
+        payload = to_jev_state(state_with([element(1, "影子按钮", ["CLICK"], shadow=True),
+                                           element(2, "普通按钮", ["CLICK"])]))
+        assert payload["elements"][0]["shadow"] is True
+        assert "shadow" not in payload["elements"][1]
+
     def test_every_offered_operation_that_needs_a_target_has_a_head(self):
         elements = [element(1, "查询", ["CLICK"]), element(2, "账号", ["CLICK", "TYPE_TEXT"], role="textbox"),
                     element(3, "下方按钮", ["CLICK"], in_viewport=False)]

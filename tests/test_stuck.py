@@ -62,3 +62,13 @@ class TestLowConfidence:
 def test_press_key_decision_has_key_in_target():
     decision = Decision(operation="PRESS_KEY", press_key="Enter", confidence=0.9)
     assert StuckDetector.key(decision) == ("PRESS_KEY", "Enter")
+
+
+def test_page_fact_rows_do_not_mask_no_progress():
+    """页面事实行（新标签/对话框）不是动作，不能让"重复且没进展"判不出来。"""
+    detector = StuckDetector(conf_min=0.5)
+    fact = RecentAction(action="PAGE", kind="dialog", text="原生 alert 对话框", step=1)
+    assert detector.observe(click(), [*history(False), fact]) is None
+    assert detector.observe(click(), [*history(False, False), fact]) is None
+    signal = detector.observe(click(), [*history(False, False, False), fact])
+    assert signal is not None and signal.kind == "repeat_no_progress"

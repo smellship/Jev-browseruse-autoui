@@ -8,6 +8,8 @@ M2：监督模型跨步共享一份预算；它给 REPLAN 时，剩下的步骤�
 from __future__ import annotations
 
 import json
+import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -91,12 +93,13 @@ class PlanRunner:
                  engine: JevEngine | None = None, verbose: bool = True, run_dir: Path | None = None,
                  vars: dict[str, str] | None = None, history_carry: int = HISTORY_CARRY,
                  max_actions: int | None = None, max_decisions: int | None = None,
-                 supervisor: Supervisor | None = None):
+                 supervisor: Supervisor | None = None, json_mode: bool = False):
         self.s = settings
         self.plan = plan
         self.driver = driver or Driver(settings)
         self.engine = engine or JevEngine(settings)
         self.verbose = verbose
+        self.json_mode = json_mode      # 追 JSON 时人类话术走 stderr，stdout 只留最后那份 JSON
         self.run_dir = run_dir
         self.history_carry = history_carry
         self.max_actions = max_actions if max_actions is not None else settings.max_actions
@@ -128,7 +131,10 @@ class PlanRunner:
         history: list[RecentAction] = []
         replans: list[dict] = []
         attempts: dict[int, int] = {}
+        actions: list[dict] = []
+        root_trace = None
         try:
+            root_trace = (run_dir / "trace.jsonl").open("w", encoding="utf-8")
             self.driver.start()
             index = 1
             while index <= len(self.plan.steps):
@@ -142,11 +148,13 @@ class PlanRunner:
                 if self.supervisor is not None:
                     self.supervisor.new_step()
                 try:
-                    outcome, history = self._step(run_dir, index, step, history, attempts[index])
+                    outcome, history = self._step(run_dir, index, step, history, attempts[index],
+                                                  self._sink(root_trace, index))
                 except Exception as exc:
                     outcome = StepOutcome(index, step.goal, self._dir_name(index, step, attempts[index]),
                                           "error", f"{exc.__class__.__name__}: {exc}", attempt=attempts[index])
                 outcomes.append(outcome)
+                actions.extend(self._step_actions(run_dir, outcome))
                 self._say(self._line(outcome))
                 if outcome.success:
                     index += 1
@@ -176,6 +184,10 @@ class PlanRunner:
                                             "前序步骤未通过，未执行"))
             if result.status != "ok":
                 self._shot(run_dir, "failure")
+            if root_trace is not None:
+                root_trace.close()
+            (run_dir / "actions.json").write_text(
+                json.dumps(actions, ensure_ascii=False, indent=2), encoding="utf-8")
             result.steps = outcomes
             result.defect_candidates = list(self.defects)
             result.zoom_note = self.driver.zoom_note
@@ -197,14 +209,16 @@ class PlanRunner:
         self.driver.wait_first_paint()
 
     def _step(self, run_dir: Path, index: int, step: PlanStep, history: list[RecentAction],
-              attempt: int = 1) -> tuple[StepOutcome, list[RecentAction]]:
+              attempt: int = 1,
+              trace_sink: Callable[[dict], None] | None = None) -> tuple[StepOutcome, list[RecentAction]]:
         remaining = [s.goal for s in self.plan.steps[index:]]  # 当前步之后的计划，供 REPLAN 参考
         runner = Runner(self.s, step.goal, step.url or self.plan.url, checks=step.checks,
                         task=self.plan.slug, driver=self.driver, engine=self.engine,
                         verbose=self.verbose, run_dir=run_dir / "steps" / self._dir_name(index, step, attempt),
                         manage_driver=False, recent=history[-self.history_carry:], vars=self.vars,
                         max_actions=self.max_actions, max_decisions=self.max_decisions,
-                        supervisor=self.supervisor, remaining_goals=remaining)
+                        supervisor=self.supervisor, remaining_goals=remaining,
+                        json_mode=self.json_mode, trace_sink=trace_sink)
         result = runner.run()
         defects = [f"第{index}步 {item}" for item in result.defect_candidates]
         self.defects.extend(defects)
@@ -212,6 +226,23 @@ class PlanRunner:
                               result.detail, result.steps, list(result.checks), defects,
                               attempt=attempt, replan=result.replan)
         return outcome, runner.recent
+
+    @staticmethod
+    def _sink(handle, index: int) -> Callable[[dict], None]:
+        """把某一步的 trace 行原样汇进运行目录根部的聚合 trace（补记它属于哪一步）。"""
+        def emit(row: dict) -> None:
+            handle.write(json.dumps({**row, "plan_step": index}, ensure_ascii=False) + "\n")
+            handle.flush()
+        return emit
+
+    @staticmethod
+    def _step_actions(run_dir: Path, outcome: StepOutcome) -> list[dict]:
+        path = run_dir / "steps" / outcome.dir / "actions.json"
+        try:
+            rows = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return []
+        return [{**row, "plan_step": outcome.index} for row in rows if isinstance(row, dict)]
 
     def _dir_name(self, index: int, step: PlanStep, attempt: int = 1) -> str:
         return self.plan.step_dir_name(index, step, attempt)
@@ -230,7 +261,7 @@ class PlanRunner:
 
     def _shot(self, run_dir: Path, name: str) -> None:
         try:
-            self.driver.screenshot(run_dir / "shots" / f"{name}.png")
+            self.driver.screenshot(run_dir / "screenshots" / f"{name}.png")
         except Exception:
             pass
 
@@ -243,7 +274,8 @@ class PlanRunner:
             "status": result.status,
             "status_label": result.label,
             "detail": result.detail,
-            "mode": "ci" if self.s.headless else "debug",
+            "mode": self.s.ui_agent_mode,
+            "headless": self.s.headless,
             "viewport": self.s.ui_agent_viewport,
             "decision_model": self.s.typesafe_model,
             "text_model": self.s.text_model,
@@ -264,4 +296,4 @@ class PlanRunner:
 
     def _say(self, text: str) -> None:
         if self.verbose:
-            print(text, flush=True)
+            print(text, file=sys.stderr if self.json_mode else sys.stdout, flush=True)

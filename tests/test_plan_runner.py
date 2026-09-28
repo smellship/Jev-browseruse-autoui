@@ -204,3 +204,26 @@ def test_step_number_stays_out_of_the_model_payload():
     state = build_state(snapshot("a"), [RecentAction(action="CLICK", step=3)], {})
     payload = to_jev_state(state)["recent_actions"][0]
     assert payload["action"] == "CLICK" and "step" not in payload
+
+
+def test_run_dir_root_aggregates_trace_and_actions_with_plan_step(tmp_path):
+    """平台按运行目录根部读 trace.jsonl 与 actions.json：两处都要在，且标明属于哪一步。"""
+    runner, _, _ = make_plan_runner(
+        tmp_path,
+        [snapshot("a"), snapshot("b", text="登录完成"), snapshot("c", text="票据类型"),
+         snapshot("c", text="票据类型")],
+        [click(), done(), click(), done()],
+    )
+    result = runner.run()
+
+    assert result.status == "ok"
+    rows = [json.loads(line) for line in
+            (result.run_dir / "trace.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert rows and all({"step", "url", "title"} <= set(row) for row in rows)
+    assert {row["plan_step"] for row in rows} == {1, 2}
+    actions = json.loads((result.run_dir / "actions.json").read_text(encoding="utf-8"))
+    assert [item["action"] for item in actions] == ["CLICK", "CLICK"]
+    assert {item["plan_step"] for item in actions} == {1, 2}
+    for step in result.steps:
+        assert (result.run_dir / "steps" / step.dir / "trace.jsonl").exists()
+

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 import re
+import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -33,6 +35,7 @@ from ui_agent.verify.asserts import CheckResult, CheckSpec, run_checks
 
 HINT_LIMIT = 3          # 注入 Jev 的监督提示最多留最近三条
 BUDGET_EXTEND = 10      # 监督模型说"还能继续"时，给预算触发点放宽的量
+DIALOG_DEFECT_KINDS = ("confirm", "prompt", "beforeunload")  # 由配置代替用户应答的对话框
 
 
 @dataclass
@@ -70,13 +73,16 @@ class Runner:
                  verbose: bool = True, run_dir: Path | None = None, manage_driver: bool = True,
                  recent: list[RecentAction] | None = None, vars: dict[str, str] | None = None,
                  max_actions: int | None = None, max_decisions: int | None = None,
-                 supervisor: Supervisor | None = None, remaining_goals: list[str] | None = None):
+                 supervisor: Supervisor | None = None, remaining_goals: list[str] | None = None,
+                 json_mode: bool = False, trace_sink: Callable[[dict], None] | None = None):
         self.s = settings
         self.goal = goal
         self.url = url
         self.checks = checks or []
         self.task = task
         self.verbose = verbose
+        self.json_mode = json_mode      # 追 JSON 时人类话术走 stderr，stdout 只留最后那份 JSON
+        self.trace_sink = trace_sink    # 计划模式用它把每行 trace 汇总到运行目录根部
         self.driver = driver or Driver(settings)
         self.engine = engine or JevEngine(settings)
         self.executor = Executor(self.driver)
@@ -155,8 +161,8 @@ class Runner:
                 self.driver.reload()
                 raw = self.driver.wait_rendered()
             fp = raw.get("fingerprint", "")
-            if self.recent and prev_fp:
-                self.recent[-1].page_changed = fp != prev_fp
+            if prev_fp:
+                self._mark_page_changed(fp != prev_fp)
             state = build_state(raw, self.recent, self.executor.click_failures,
                                 self.s.max_elements, self.s.max_text)
             self._dump(run_dir, "snapshots", step, to_jev_state(state))
@@ -174,7 +180,7 @@ class Runner:
                 continue
 
             decision = self.engine.decide(state, self.goal, self._rules())
-            if not self.s.headless:
+            if self.s.debug_artifacts:
                 self._shot(run_dir, f"{step:02d}-{decision.operation.lower()}")
 
             if decision.operation == "DONE":
@@ -289,7 +295,6 @@ class Runner:
         if action.warning:
             self.defects.append(f"决策#{step} {decision.operation}: {action.warning}")
             self._say(f"⚠ {action.warning}")
-        self._trace(trace, step, state, decision, action, supervisor=supervisor)
         self.recent.append(RecentAction(
             action=decision.operation,
             kind=str(decision.target or decision.press_key or ""),
@@ -298,7 +303,39 @@ class Runner:
             page_changed=None,
             step=step,
         ))
+        facts = self._collect_facts(step)
+        self._trace(trace, step, state, decision, action, supervisor=supervisor, facts=facts)
         self._say(self._step_line(step, decision, element, action))
+
+    def _collect_facts(self, step: int) -> list[dict]:
+        """把驱动登记的页面级事实（新标签、原生对话框）变成可对账的行与缺陷候选。
+
+        对话框是"配置代替用户按了确定/取消"——模型没见过它，所以 confirm/prompt/beforeunload
+        一律记成缺陷候选，避免静默假成功。
+        """
+        facts: list[dict] = []
+        for note in self.driver.take_notes():
+            facts.append({"fact": "tab", "note": note})
+            self.recent.append(RecentAction(action="PAGE", kind="tab", text=note, step=step))
+            self._say(f"⇢ {note}")
+        for dialog in self.driver.take_dialogs():
+            handled = {"accept": "已点确定", "dismiss": "已关闭", "failed": "应答失败"}.get(
+                dialog["handled"], dialog["handled"])
+            note = f"原生 {dialog['kind']} 对话框：「{dialog['message']}」→ {handled}"
+            if dialog.get("default_value"):
+                note += f"（默认值 {dialog['default_value']}）"
+            facts.append({"fact": "dialog", **dialog})
+            self.recent.append(RecentAction(action="PAGE", kind="dialog", text=note, step=step))
+            self._say(f"⇢ {note}")
+            if dialog["kind"] in DIALOG_DEFECT_KINDS:
+                self.defects.append(f"决策#{step} {note}")
+        return facts
+
+    def _mark_page_changed(self, changed: bool) -> None:
+        """page_changed 只挂在真正的动作行上：页面事实行不是动作，不该被当成一次尝试。"""
+        row = next((a for a in reversed(self.recent) if a.action != "PAGE"), None)
+        if row is not None:
+            row.page_changed = changed
 
     @staticmethod
     def _signal_detail(signal: StuckSignal) -> str:
@@ -360,13 +397,13 @@ class Runner:
 
     def _shot(self, run_dir: Path, name: str) -> None:
         try:
-            self.driver.screenshot(run_dir / "shots" / f"{name}.png")
+            self.driver.screenshot(run_dir / "screenshots" / f"{name}.png")
         except Exception:
             pass
 
     def _trace(self, trace, step: int, state: State, decision: Decision | None,
                action: ActionResult | None, signal: StuckSignal | None = None,
-               supervisor: dict | None = None) -> None:
+               supervisor: dict | None = None, facts: list[dict] | None = None) -> None:
         line = {
             "step": step,
             "time": datetime.now().isoformat(timespec="seconds"),
@@ -391,8 +428,12 @@ class Runner:
             line["text_model"] = self.text_meta
         if action is not None and decision is not None and decision.operation == "UPLOAD" and self.upload_meta:
             line["upload"] = self.upload_meta  # 只记文件名/大小与变量键名，路径不落盘
+        if facts:
+            line["page_facts"] = facts
         trace.write(json.dumps(line, ensure_ascii=False) + "\n")
         trace.flush()
+        if self.trace_sink is not None:
+            self.trace_sink(line)
 
     def _write_result(self, run_dir: Path, result: RunResult, started: datetime) -> None:
         data = {
@@ -403,7 +444,8 @@ class Runner:
             "status_label": result.label,
             "detail": result.detail,
             "steps": result.steps,
-            "mode": "ci" if self.s.headless else "debug",
+            "mode": self.s.ui_agent_mode,
+            "headless": self.s.headless,
             "viewport": self.s.ui_agent_viewport,
             "decision_model": self.s.typesafe_model,
             "text_model": self.s.text_model,
@@ -424,7 +466,7 @@ class Runner:
 
     def _say(self, text: str) -> None:
         if self.verbose:
-            print(text, flush=True)
+            print(text, file=sys.stderr if self.json_mode else sys.stdout, flush=True)
 
     def _step_line(self, step: int, decision: Decision, element: Element | None, action: ActionResult) -> str:
         label = element.label if element else (decision.target or "—")

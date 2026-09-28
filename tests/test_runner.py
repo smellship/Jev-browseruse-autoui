@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from fakes import FakeDriver, FakeEngine, click, done, read_trace, settings_for, snapshot
+from fakes import FakeDriver, FakeEngine, blocked, click, done, read_trace, settings_for, snapshot
 
 from ui_agent.run.runner import Runner
 from ui_agent.schema.decision import Decision
@@ -133,3 +133,47 @@ def test_still_blank_after_reload_is_left_to_the_decision_model(tmp_path):
     assert driver.reloads == 1, "只刷新一次，不能刷成循环"
     assert result.status == "blocked"
     assert engine.seen_states[0].elements == []
+
+
+def test_artifact_policy_follows_mode_not_headless(tmp_path):
+    """debug 即便无头也留逐步截图：产物策略与有无头已经解绑。"""
+    settings = settings_for(tmp_path, ui_agent_mode="debug", ui_agent_headless=True)
+    driver = FakeDriver([snapshot("a"), snapshot("b", text="查询完成"), snapshot("b", text="查询完成")])
+    driver.s = settings
+    runner = Runner(settings, "目标", "http://x/", checks=[parse_check("text_contains=查询完成")],
+                    task="t", driver=driver, engine=FakeEngine([click(), done()]), verbose=False)
+    result = runner.run()
+
+    assert settings.headless is True and result.status == "ok"
+    shots = sorted(p.name for p in (result.run_dir / "screenshots").glob("*.png"))
+    assert shots == ["00-click.png", "01-done.png"]
+    saved = json.loads((result.run_dir / "result.json").read_text(encoding="utf-8"))
+    assert saved["mode"] == "debug" and saved["headless"] is True
+
+
+def test_ci_mode_keeps_only_the_failure_screenshot(tmp_path):
+    settings = settings_for(tmp_path, ui_agent_mode="ci", ui_agent_headless=False)
+    driver = FakeDriver([snapshot("a")])
+    driver.s = settings
+    runner = Runner(settings, "目标", "http://x/", checks=[],
+                    task="t", driver=driver, engine=FakeEngine([blocked()]), verbose=False)
+    result = runner.run()
+
+    assert result.status == "blocked"
+    assert sorted(p.name for p in (result.run_dir / "screenshots").glob("*.png")) == ["failure.png"]
+    saved = json.loads((result.run_dir / "result.json").read_text(encoding="utf-8"))
+    assert saved["mode"] == "ci" and saved["headless"] is False
+
+
+def test_trace_sink_gets_the_same_rows_as_the_trace_file(tmp_path):
+    rows: list[dict] = []
+    settings = settings_for(tmp_path)
+    driver = FakeDriver([snapshot("a"), snapshot("b", text="查询完成"), snapshot("b", text="查询完成")])
+    driver.s = settings
+    runner = Runner(settings, "目标", "http://x/", checks=[parse_check("text_contains=查询完成")],
+                    task="t", driver=driver, engine=FakeEngine([click(), done()]), verbose=False,
+                    trace_sink=rows.append)
+    result = runner.run()
+
+    assert [row["operation"] for row in rows] == ["CLICK", "DONE"]
+    assert rows == read_trace(result.run_dir)

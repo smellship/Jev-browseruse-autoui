@@ -180,11 +180,11 @@ def _note(row: dict, act: dict) -> str:
 
 
 def _gallery(rel: str, sub: Path) -> str:
-    shots = sorted((sub / "shots").glob("*.png")) if (sub / "shots").is_dir() else []
+    shots = sorted((sub / "screenshots").glob("*.png")) if (sub / "screenshots").is_dir() else []
     if not shots:
         return ""
     figs = "".join(
-        f"<figure><img src=\"{esc((Path(rel) / 'shots' / p.name).as_posix())}\" alt=\"{esc(p.name)}\">"
+        f"<figure><img src=\"{esc((Path(rel) / 'screenshots' / p.name).as_posix())}\" alt=\"{esc(p.name)}\">"
         f"<figcaption>{esc(p.name)}</figcaption></figure>" for p in shots
     )
     return f"<h3>截图</h3><div class='shots'>{figs}</div>"
@@ -232,7 +232,10 @@ def _meta(data: dict) -> str:
     if data.get("url"):
         parts.append(f"<b>入口</b> {esc(data.get('url'))}")
     if data.get("mode"):
-        parts.append(f"<b>模式</b> {'无头' if data.get('mode') == 'ci' else '可视化'}")
+        policy = "逐步截图" if data.get("mode") == "debug" else "只留失败截图"
+        parts.append(f"<b>模式</b> {esc(data.get('mode'))}（{policy}）")
+    if data.get("headless") is not None:
+        parts.append(f"<b>浏览器</b> {'无头' if data.get('headless') else '可视化'}")
     if data.get("viewport"):
         parts.append(f"<b>视口</b> {esc(data.get('viewport'))}")
     if data.get("duration_s") is not None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from ui_agent.config import Settings
 from ui_agent.driver.ladder import LadderOutcome
@@ -27,6 +28,16 @@ class FakeDriver:
         self.reloads = 0
         self.paint_note = ""
         self.uploads: list[tuple[int, list[str], str]] = []
+        self.notes: list[str] = []
+        self.dialogs: list[dict] = []
+
+    def take_notes(self) -> list[str]:
+        notes, self.notes = self.notes, []
+        return notes
+
+    def take_dialogs(self) -> list[dict]:
+        dialogs, self.dialogs = self.dialogs, []
+        return dialogs
 
     def start(self) -> None:
         self.starts += 1
@@ -91,7 +102,8 @@ class FakeDriver:
         self.settles += 1
 
     def screenshot(self, path) -> None:
-        pass
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        Path(path).write_bytes(b"\x89PNG\r\n\x1a\n")
 
 
 class FakeEngine:
